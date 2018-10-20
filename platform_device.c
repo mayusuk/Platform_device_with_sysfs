@@ -5,73 +5,60 @@
 #include <linux/module.h>
 #include "platform_device.h"
 
-
 #define CLASS_NAME "HCSR"
-#define DRIVER_NAME "PLT_HCSR"
-
-struct hcsr_dev {
-   	chip_hcsrdevice plat_device;
-    	struct miscdevice misc_device;
-	struct pins pin;
-	struct parameters param;
-	struct buff buffer;
-	struct list_head device_entry;
-	struct task_struct *task;
-	char *dev_name;
-	bool is_in_progress;
-	int enable;
-};
 
 static void hcsrdevice_release(struct device *dev)
  {
 
  }
 
-static struct HCSRdevice hcsr_device0 = {
+static struct HCSRChipdevice hcsr_device0 = {
 		.name	= DEVICE_NAME1,
-		.dev_no 	= 1,
-		.plf_dev = {
+		.dev_n 	= 1,
+		.dev = {
 			.name	= DEVICE_NAME1,
 			.id	= -1,
 			.dev = {.release = hcsrdevice_release,}
 		}
 };
 
-static struct HCSRdevice hcsr_device1 = {
+/*
+
+static struct HCSRChipdevice hcsr_device1 = {
 		.name	= DEVICE_NAME2,
-		.dev_no 	= 2,
-		.plf_dev = {
+		.dev_n 	= 2,
+		.dev = {
 			.name	= DEVICE_NAME2,
 			.id	= -1,
 			.dev = {.release = hcsrdevice_release,}
 		}
 };
 
-
-static int p_device_init(void)
+*/
+static int platform_device_init(void)
 {
-	int ret = 0;
+	int result = 0;
 
 	platform_device_register(&hcsr_device0.dev);
 
-	printk(KERN_ALERT "Platform device 1 is registered in init \n");
+	printk(KERN_INFO "Platform device 1 is registered in init \n");
 
-	platform_device_register(&hcsr_device1.dev);
+	//platform_device_register(&hcsr_device1.dev);
 
-	printk(KERN_ALERT "Platform device 2 is registered in init \n");
+	//printk(KERN_INFO "Platform device 2 is registered in init \n");
 
-	return ret;
+	return result;
 }
 
-static void p_device_exit(void)
+static void platform_device_exit(void)
 {
-    platform_device_unregister(&hcsr_device0.dev);
+    	platform_device_unregister(&hcsr_device0.dev);
 
-	platform_device_unregister(&hcsr_device1.dev);
+	//platform_device_unregister(&hcsr_device1.dev);
 
-	printk(KERN_ALERT "Goodbye, unregister the device\n");
+	printk(KERN_INFO "Unregistering the platform device\n");
 }
 
-module_init(p_device_init);
-module_exit(p_device_exit);
+module_init(platform_device_init);
+module_exit(platform_device_exit);
 MODULE_LICENSE("GPL");

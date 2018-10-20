@@ -2,17 +2,15 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include "platform_device.h"
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/types.h>
 #include <asm/uaccess.h>
 #include <linux/string.h>
 #include <linux/device.h>
-#include "gpio_ioctl.h"
 #include <linux/errno.h>
-
-
+#include "platform_device.h"
+#include "muxtable.h"
 
 int errno;
 unsigned long long t1,t2;
@@ -28,12 +26,10 @@ static int base_minor_num;
 
 
 static int first = 1;
-static const struct platform_device_id P_id_table[] = {
+static const struct platform_device_id Plat_id_table[] = {
          { DEVICE_NAME1, 0 },
          { DEVICE_NAME2, 0 },
 };
-
-
 
 
 static LIST_HEAD(device_list);
@@ -85,9 +81,10 @@ static irq_handler_t interrupt_handler(unsigned int irq, void *dev_id) {
 }
 
 
+
 int set_interrupt(void *device_struct){
 
-	struct hcsr_dev *hcsr_obj = (struct hcsr_dev*)device_struct;
+    struct hcsr_dev *hcsr_obj = (struct hcsr_dev*)device_struct;
     int irqNumber, result;
     irqNumber = gpio_to_irq(hcsr_obj->pin.gpio_echo_pin);
 	if(irqNumber < 0){
@@ -152,6 +149,68 @@ int set_pin_conf(int pin, bool func){
 }
 
 
+int set_mux(struct pins* pins, void* device_struct){
+
+    struct hcsr_dev *hcsr_obj = (struct hcsr_dev*)device_struct;
+
+    printk(KERN_INFO "Echo Pin  %d *** Trigger Pin %d\n",pins->echo_pin, pins->trigger_pin);
+
+    int gpio_trigger_pin, gpio_echo_pin;
+    gpio_echo_pin = set_pin_conf(pins->echo_pin,INPUT_FUNC);
+    gpio_trigger_pin= set_pin_conf(pins->trigger_pin,OUTPUT_FUNC);
+
+    hcsr_obj->pin.trigger_pin = pins->trigger_pin ;
+    hcsr_obj->pin.echo_pin = pins->echo_pin;
+    hcsr_obj->pin.gpio_trigger_pin = gpio_trigger_pin ;
+    hcsr_obj->pin.gpio_echo_pin = gpio_echo_pin;
+
+    printk(KERN_INFO "Echo Pin  %d *** Trigger Pin %d\n",hcsr_obj->pin.gpio_echo_pin, hcsr_obj->pin.gpio_trigger_pin);
+    return 1;
+
+}
+
+
+static int start_sampling(void *handle)
+{
+    struct hcsr_dev *hcsr_obj = (struct hcsr_dev*)handle;
+    int counter = 0;
+    int i,total_distance, distance = 0;
+    struct data measurement;
+    unsigned long long timestamp;
+    if(set_interrupt((void*)hcsr_obj) < 0){
+             printk(KERN_INFO "Error While setting up the interrupt\n");
+             return -1;
+    }
+
+    init_buffer(all_samples, hcsr_obj->param.number_of_samples+2, &all_samples->sem, &all_samples->Lock);
+
+	printk("entered thread with echo pin %d and trigger pin %d \n", hcsr_obj->pin.gpio_echo_pin, hcsr_obj->pin.gpio_trigger_pin);
+	do{
+        printk("entered thread %d \n", counter);
+		gpio_set_value_cansleep(hcsr_obj->pin.gpio_trigger_pin, 0);
+		gpio_set_value_cansleep(hcsr_obj->pin.gpio_trigger_pin, 1);
+		udelay(30);
+   		gpio_set_value_cansleep(hcsr_obj->pin.gpio_trigger_pin, 0);
+		mdelay(hcsr_obj->param.delta);
+		counter++;
+	}while(!kthread_should_stop() && counter < hcsr_obj->param.number_of_samples + 2);
+
+    total_distance = 0;
+    timestamp = get_tsc();
+    for(i = 1;i < hcsr_obj->param.number_of_samples+1; i++){
+        distance += read_fifo(all_samples, &all_samples->sem, &all_samples->Lock).distance;
+        printk("Calculating distance %d \n", distance);
+    }
+
+    measurement.timestamp = timestamp;
+    measurement.distance = total_distance/hcsr_obj->param.number_of_samples;
+    insert_buffer(&hcsr_obj->buffer, measurement, &hcsr_obj->buffer.sem, &hcsr_obj->buffer.Lock);
+
+    hcsr_obj->is_in_progress = false;
+    release_irq((void*)hcsr_obj);
+
+    return 0;
+}
 
 
 static ssize_t show_echo_pin(struct device *dev_struct, struct device_attribute *attr, char *buf)
@@ -165,9 +224,18 @@ static ssize_t show_distance(struct device *dev_struct, struct device_attribute 
 {
 	
        struct hcsr_dev *device_struct  = dev_get_drvdata(dev_struct);
+	struct data readings;
+	if(!device_struct->is_in_progress){
+		if(device_struct->buffer.tail > 0){
+			readings = read_fifo(&device_struct->buffer, &device_struct->buffer.sem, &device_struct->buffer.Lock);
+			printk(KERN_INFO "READING from buffer %d", readings.distance);
+		}
+		else {
+			return snprintf(buf, PAGE_SIZE, "%d\n",0);
+		}
+	}	
 
-	printk("distance = %d\n", pshcsr_dev_obj->Pring_buf->ptr[pshcsr_dev_obj->Pring_buf->tail].TSC);
-	 return snprintf(buf, PAGE_SIZE, "%d\n",pshcsr_dev_obj->Pring_buf->ptr[pshcsr_dev_obj->Pring_buf->tail].TSC);
+	return snprintf(buf, PAGE_SIZE, "%d\n",readings.distance);
 	
 }
 
@@ -207,20 +275,8 @@ static ssize_t store_echo_pin(struct device *dev_struct,
 {
 	struct hcsr_dev *device_struct = dev_get_drvdata(dev_struct);
 		
-        sscanf(buf, "%d", &pshcsr_dev_obj->echo_pin);
+        sscanf(buf, "%d", &device_struct->pin.echo_pin);
 	set_pin_conf(device_struct->pin.echo_pin, INPUT_FUNC);
-	return count;
-
-}
-
-static ssize_t store_enable(struct device *dev_struct,
-                                  struct device_attribute *attr,
-                                  const char *buf,
-                                  size_t count)
-{
-	struct hcsr_dev *device_struct = dev_get_drvdata(dev_struct);
-		
-        sscanf(buf, "%d", &device_struct->enable);
 	return count;
 
 }
@@ -231,9 +287,9 @@ static ssize_t enable(struct device *dev_struct,
                                   const char *buf,
                                   size_t count)
 {
-	int integer,ret;
+	int input,ret;
 	struct hcsr_dev *device_data = dev_get_drvdata(dev_struct);
-	sscanf(buf, "%d",&integer);
+	sscanf(buf, "%d",&input);
 
 	if(device_data->is_in_progress){
 		printk(KERN_INFO "On-Going Measurement");
@@ -256,21 +312,177 @@ static ssize_t enable(struct device *dev_struct,
 
 static DEVICE_ATTR(trigger_pin,S_IRWXU, show_trigger_pin, store_trigger_pin);
 static DEVICE_ATTR(echo_pin,S_IRWXU, show_echo_pin, store_echo_pin);
-static DEVICE_ATTR(enable,S_IRWXU, show_enable, store_enable);
+static DEVICE_ATTR(enable,S_IRWXU, show_enable, enable);
 static DEVICE_ATTR(distance, S_IRWXU, show_distance, NULL);
+
+
+ssize_t start_measurement(struct file *file, const char *buff, size_t size, loff_t *lt){
+
+	struct hcsr_dev *device_data = file->private_data;
+	int *input;
+
+	printk(KERN_INFO "%s starting the sampling\n", device_data->device.name);
+	if (!(input= kmalloc(sizeof(int), GFP_KERNEL)))
+	{
+		printk("Bad Kmalloc\n");
+		return -ENOMEM;
+	}
+
+	if (copy_from_user(input, buff, sizeof(int))){
+		return -EFAULT;
+	}
+	if(device_data->is_in_progress){
+		printk(KERN_INFO "On-Going Measurement");
+		return -EINVAL;
+	}else{
+		if(input  == 0) {
+            printk(KERN_INFO "Clearing the buffer\n");
+			// write code to handle clearing of buffer
+		}
+		printk(KERN_INFO "Starting the Sampling now!!!!!\n");
+		device_data->is_in_progress = true;
+        kthread_run(&start_sampling,(void *)device_data, "start_sampling");
+
+	}
+	kfree(input);
+	return 1;
+}
+
+
+ssize_t read_buffer(struct file *file, char *buff, size_t size, loff_t *lt) {
+	struct hcsr_dev *device_data = file->private_data;
+	if(device_data->is_in_progress){
+		struct data readings = read_fifo(&device_data->buffer, &device_data->buffer.sem, &device_data->buffer.Lock);
+		printk(KERN_INFO "READING from buffer %d", readings.distance);
+	}else{
+	    start_measurement(file, buff, size, lt);
+	}
+}
+
+
+int device_open(struct inode *inode, struct file *file){
+	//struct hcsr_dev *hcsr_devp = NULL;
+	//struct miscdevice *misc_dev = NULL;
+	//misc_dev = container_of(inode->i_fop, struct miscdevice, fops);
+	//hcsr_devp = container_of(misc_dev, struct hcsr_dev, device);
+	file->private_data = device_struct;
+	printk(KERN_INFO "%s device is opened\n", device_struct->device.name);
+	return 0;
+}
+
+
+bool validate_pins(struct pins *pin){
+	if(pin->echo_pin < 0 || pin->trigger_pin < 0){
+		return false;
+	}
+	return true;
+}
+/**
+
+	IOCTL for Seeting pins and configuration of HCSR device
+
+*/
+long ioctl_handle(struct file *file, unsigned int command, unsigned long ioctl_param){
+	struct pins *pin_conf;
+	struct parameters* param;
+	struct hcsr_dev *device_data = file->private_data;
+	printk(KERN_INFO "INSIDE IOCTL\n");
+	switch(command){
+		case CONFIG_PINS:
+                    printk(KERN_INFO "Setting the Pins\n");
+					pin_conf = kmalloc(sizeof(struct pins), GFP_KERNEL);
+					/*if(!validate_pins(pin_conf)){
+						return -EINVAL;
+					}*/
+					copy_from_user(pin_conf, (struct pins*) ioctl_param, sizeof(struct pins));
+                   			 set_mux(pin_conf,(void*)device_data);
+					kfree(pin_conf);
+					break;
+		case SET_PARAMETERS:
+                    printk(KERN_INFO "Setting the parameters for the %s\n", device_data->device.name);
+					param = kmalloc(sizeof(struct parameters), GFP_KERNEL);
+					copy_from_user(param, (struct parameters*) ioctl_param, sizeof(param));
+					device_data->param.number_of_samples = param->number_of_samples;
+					device_data->param.delta = param->delta;
+                    if(alloc_buffer(all_samples, device_data->param.number_of_samples + 2) < 0){
+                        printk(KERN_DEBUG "ERROR while allocating memory");
+                        return -1;
+                    }
+					kfree(param);
+					break;
+		default: return -EINVAL;
+	}
+
+
+	return 1;
+}
+
+int release(struct inode *inode, struct file *file){
+	struct hcsr_dev *device_data = file->private_data;
+	// release_irq((void*)device_struct);
+	printk(KERN_INFO "closing device \n");
+	return 0;
+}
+
+static struct file_operations fops = {
+
+	.open = device_open,
+	.write = start_measurement,
+	.read = read_buffer,
+	.unlocked_ioctl = ioctl_handle,
+	.release = release,
+};
+
+
+struct hcsr_dev* init_device(void * plat_chip){
+
+    int i, error;
+    char name[20];
+    struct hcsr_dev* device_struct;
+    struct HCSRChipdevice * plat_device = (struct HCSRChipdevice *)plat_chip;
+    
+	// table.array_struct = (struct hcsr_dev**)kmalloc(sizeof(struct hcsr_dev *)*number_of_device, GFP_KERNEL);
+	// table.array_device_number = kmalloc(sizeof(dev_t)*number_of_devices, GFP_KERNEL);
+	//hcsr_class = class_create(THIS_MODULE, CLASS_NAME);
+	//snprintf(name, sizeof name, "%s",DEVICE_NAME_PREFIX);
+    	printk(KERN_INFO "Registering HCSR device");
+	device_struct = kmalloc(sizeof(struct hcsr_dev), GFP_KERNEL);
+	if(!device_struct) {
+	   printk(KERN_DEBUG "ERROR while allocating memory");
+	   return NULL;
+	}
+    	memset(device_struct, 0, sizeof (struct hcsr_dev));
+	device_struct->device.minor = MISC_DYNAMIC_MINOR;
+	device_struct->device.name = DEVICE_NAME1;
+	device_struct->dev_name = DEVICE_NAME1;
+	error = misc_register(&device_struct->device);
+	if(error){
+		printk("Error while registering device");
+		return NULL;
+	}
+	    all_samples = kmalloc(sizeof(struct buff), GFP_KERNEL);
+	    if(alloc_buffer(&device_struct->buffer, MAX_BUFF_SIZE) < 0){
+		printk(KERN_DEBUG "ERROR while allocating memory");
+		   return NULL;
+	    }
+	init_buffer(&device_struct->buffer,MAX_BUFF_SIZE, &device_struct->buffer.sem,  &device_struct->buffer.Lock);
+	printk(KERN_INFO "Driver %s is initialised\n", CLASS_NAME);
+	return device_struct;
+
+}
 
 
 static int Plat_driver_probe(struct platform_device *device_found)
 {
 	
 	int rval;	
-	struct hcsr_dev device_struct;
+	struct hcsr_dev* device_struct;
 
-	struct HCSRdevice* plat_device;
+	struct HCSRChipdevice * plat_device;
 	
-	plat_device = container_of(device_found, struct HCSRdevice, dev);
+	plat_device = container_of(device_found, struct HCSRChipdevice , dev);
 	
-	printk(KERN_ALERT "Found the device -- %s  %d \n", plat_device->name, pdevice->dev_n);
+	printk(KERN_ALERT "Found the device -- %s  %d \n", plat_device->name, plat_device->dev_n);
 	if(first == 1)
 	{
 		 gko_class = class_create(THIS_MODULE, CLASS_NAME);
@@ -281,9 +493,12 @@ static int Plat_driver_probe(struct platform_device *device_found)
 			}
 		first =0;
 	}
-	if(!(device_struct =init_device((void*)plat_device)))
+	device_struct = init_device((void*)plat_device);
+
+	if(device_struct == NULL)
 	{
 		printk("device initialisation failed\n");
+		return -1;
 	}
 
 	INIT_LIST_HEAD(&device_struct->device_entry) ;
@@ -310,22 +525,11 @@ static int Plat_driver_probe(struct platform_device *device_found)
                        device_struct->dev_name, dev_attr_echo_pin.attr.name);
         }
 
-	rval = device_create_file(gko_device, &dev_attr_mode);
-        if (rval < 0) {
-               printk(" cant create device attribute %s %s\n", 
-                       device_struct->dev_name, dev_attr_mode.attr.name);
-        }
 
-	rval = device_create_file(gko_device, &dev_attr_frequency);
-        if (rval < 0) {
-       printk(" cant create device attribute %s %s\n", 
-                       device_struct->dev_name, dev_attr_frequency.attr.name);
-        }
-
-	rval = device_create_file(gko_device, &dev_attr_Enable);
+	rval = device_create_file(gko_device, &dev_attr_enable);
         if (rval < 0) {
      		printk(" cant create device attribute %s %s\n", 
-                device_struct->dev_name, dev_attr_Enable.attr.name);
+                device_struct->dev_name, dev_attr_enable.attr.name);
         }
 
         rval = device_create_file(gko_device, &dev_attr_distance);
@@ -350,15 +554,14 @@ static int Plat_driver_remove(struct platform_device *plat_dev)
 	struct hcsr_dev* device_struct;	
 	printk("enter remove of the probe\n");
 
-	list_for_each_entry(ptempcontext, &device_list, device_entry)
+	list_for_each_entry(device_struct, &device_list, device_entry)
 	{
 	    	printk("remove a list\n");
-		if(ptempcontext->dev_name == plat_dev->name)
+		if(device_struct->dev_name == plat_dev->name)
 		{
-		    --usDeviceNo;
 		    list_del(&device_struct->device_entry);
-	    	    device_destroy(gko_class, device_struct->misc_device.minor);
-		    misc_deregister(&device_struct->misc_device);
+	    	    device_destroy(gko_class, device_struct->device.minor);
+		    misc_deregister(&device_struct->device);
 	   	    printk("freed misc\n");
 		    kfree(device_struct);
 	   	    printk("freed obj\n");

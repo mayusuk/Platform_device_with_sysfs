@@ -3,7 +3,6 @@
 #include <linux/list.h>
 //#include <sys/ioctl.h>
 #include <linux/semaphore.h>
-
 #include <linux/kernel.h>    // kernel stuff
 #include <linux/gpio.h>      // GPIO functions/macros
 #include <linux/interrupt.h> // interrupt functions/macros
@@ -13,9 +12,9 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
-
-
-
+#include <linux/slab.h>
+#include "buffer.h"
+#include <linux/ioctl.h>
 #define MAX_BUFF_SIZE 5
 
 
@@ -33,9 +32,12 @@
 
 #define __SAMPLE_PLATFORM_H__
 
+#define IOCTL_APP_TYPE 80
+#define CONFIG_PINS _IOWR(IOCTL_APP_TYPE, 1, struct pins)     // ioctl to config pins of HCSR
 
+#define SET_PARAMETERS _IOWR(IOCTL_APP_TYPE, 2, struct parameters)     // ioctl to config pins of HCSR
 
-struct HCSRdevice {
+struct HCSRChipdevice {
 
 		char 			*name;
 		int			dev_n;
@@ -55,6 +57,20 @@ struct parameters {
 	int number_of_samples;
 	int delta;
 };
+
+struct hcsr_dev {
+   	struct HCSRChipdevice* plat_device;
+    	struct miscdevice device;
+	struct pins pin;
+	struct parameters param;
+	struct buff buffer;
+	struct list_head device_entry;
+	struct task_struct *task;
+	char *dev_name;
+	bool is_in_progress;
+	int enable;
+};
+
 
 #endif /* __GPIO_FUNC_H__ */
 
