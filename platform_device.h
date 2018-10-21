@@ -15,7 +15,7 @@
 #include <linux/slab.h>
 #include "buffer.h"
 #include <linux/ioctl.h>
-#define MAX_BUFF_SIZE 5
+#define MAX_BUFF_SIZE 1
 
 
 
@@ -41,6 +41,7 @@ struct HCSRChipdevice {
 
 		char 			*name;
 		int			dev_n;
+		struct device *gko_device;
 		struct platform_device 	dev;
 
 };
@@ -68,6 +69,8 @@ struct hcsr_dev {
 	struct task_struct *task;
 	char *dev_name;
 	bool is_in_progress;
+	struct buff all_samples;
+	struct hcsr_dev *next;
 	int enable;
 };
 

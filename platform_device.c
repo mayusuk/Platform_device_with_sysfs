@@ -22,7 +22,6 @@ static struct HCSRChipdevice hcsr_device0 = {
 		}
 };
 
-/*
 
 static struct HCSRChipdevice hcsr_device1 = {
 		.name	= DEVICE_NAME2,
@@ -34,7 +33,6 @@ static struct HCSRChipdevice hcsr_device1 = {
 		}
 };
 
-*/
 static int platform_device_init(void)
 {
 	int result = 0;
@@ -45,7 +43,7 @@ static int platform_device_init(void)
 
 	//platform_device_register(&hcsr_device1.dev);
 
-	//printk(KERN_INFO "Platform device 2 is registered in init \n");
+	printk(KERN_INFO "Platform device 2 is registered in init \n");
 
 	return result;
 }
